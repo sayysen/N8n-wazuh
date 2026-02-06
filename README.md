@@ -86,6 +86,10 @@ Create an n8n Data Table with the following columns:
 
 ## 🔄 Workflow Overview
 
+![Workflow Diagram](workflow-diagram.png)
+
+### Flow Description
+
 ```
 1. Microsoft Outlook Trigger
    ↓
