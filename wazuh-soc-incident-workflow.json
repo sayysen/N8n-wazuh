@@ -1,0 +1,726 @@
+{
+  "name": "Wazuh SOC Incident Analysis Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "output": "raw",
+        "filters": {
+          "foldersToInclude": [
+            "YOUR_OUTLOOK_FOLDER_ID_HERE"
+          ],
+          "sender": "YOUR_EMAIL@example.com"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1,
+      "position": [
+        816,
+        -64
+      ],
+      "id": "c91a00f1-cb73-48fb-a4a3-90090cd6c3b9",
+      "name": "Microsoft Outlook Trigger",
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "YOUR_OUTLOOK_CREDENTIAL_ID",
+          "name": "Microsoft Outlook Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e380decf-6cf0-402f-9237-bb82085a58c0",
+              "name": "body.content",
+              "value": "={{ $json.body.content }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        -256
+      ],
+      "id": "18882221-84b0-4e32-b5f4-f56a78f13f87",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "toRecipients": "YOUR_EMAIL@example.com",
+        "subject": "Wazuh Incident AI",
+        "bodyContent": "={{ $json.output }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        2064,
+        -1040
+      ],
+      "id": "3834173e-5ec0-4439-8f83-43ee189a91d7",
+      "name": "Send a message",
+      "webhookId": "32cb2899-dc0f-4468-880e-31cadc71e7b0",
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "YOUR_OUTLOOK_CREDENTIAL_ID",
+          "name": "Microsoft Outlook Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = ($json.body?.content || $json.bodyPreview || \"\").toString();\n\nfunction pick(re) {\n  const m = raw.match(re);\n  return m ? (m[1] || m[0]).trim() : \"\";\n}\n\nconst level = Number(pick(/Level\\s*\\(?\\s*([0-9]+)\\s*\\)?/i)) || 0;\nconst rule = pick(/Rule:\\s*([0-9]+)/i);\nconst agent = pick(/Agent:\\s*([^\\r\\n]+)/i) || pick(/Received From:\\s*\\(([^)]+)\\)/i);\nconst subject = pick(/Subject:\\s*([^\\r\\n]+)/i);\nconst eventid = pick(/eventID\\\\\":\\\\\"([0-9]+)/i) || pick(/Event ID:\\s*([0-9]+)/i);\n\nreturn [{\n  raw,\n  meta: { level, rule, agent, subject, eventid }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -640
+      ],
+      "id": "b97f9f5e-fd58-415b-b5fa-65fa1351914f",
+      "name": "Normalize Wazuh Alert"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1248,
+        -144
+      ],
+      "id": "9444aecc-9cae-42a5-9b19-6a102e770702",
+      "name": "LLM – GPT-4o-mini",
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_API_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a SOC Incident Response AI running inside n8n for Wazuh alerts.\n\nABSOLUTE RULES (NON-NEGOTIABLE):\n1) You MUST call the tool \"KB_Search_Cybersecurity\" BEFORE you write ANY response content.\n2) You MUST base ALL incident-response actions ONLY on the rows returned by the KB tool.\n3) If KB returns NO relevant rows, you are NOT allowed to invent procedures. Instead:\n   - Produce a tight incident brief (facts only).\n   - Produce a Brave web search query (web-search-ready).\n   - Mark status = \"no_match\".\n4) Your final output MUST be VALID JSON ONLY (no markdown, no backticks, no commentary).\n5) Prefer exact matches by: event_id, rule_id, attack_type, keywords, platform.\n\nINPUT (Normalized Wazuh alert JSON):\n{{ JSON.stringify($json, null, 2) }}\n\nTASK FLOW YOU MUST FOLLOW:\nStep A — KB Lookup (MANDATORY):\n- Call KB_Search_Cybersecurity using the most relevant query built from:\n  event_id, rule_id, platform, attack_type, and keywords in the alert.\n\nStep B — Decision:\n- If KB returns relevant playbook rows:\n  - status = \"match\"\n  - Fill \"kb_used\" with the matched playbooks\n  - Produce SOC response using ONLY KB fields.\n\n- If KB returns no relevant rows:\n  - status = \"no_match\"\n  - Produce \"incident_brief\" (facts-only, 2–5 bullets)\n  - Produce \"brave_search\" object with:\n      scope: one of [\"mitre_attack\",\"windows_docs\",\"vendor_docs\"]\n      query: a tight query string (example: \"(site:learn.microsoft.com OR site:ultimatewindowssecurity.com) event id 4634 logoff analysis\")\n  - Produce \"kb_candidate\" as a proposed new KB entry (title + keywords + platform + event_ids + short_summary).\n\nOUTPUT JSON SCHEMA (STRICT):\n{\n  \"status\": \"match|no_match\",\n  \"search_intent\": {\n    \"attack_type\": \"string\",\n    \"keywords\": [\"string\"],\n    \"platform\": \"string\",\n    \"event_ids\": [\"string\"],\n    \"rule_ids\": [\"string\"],\n    \"suspected_technique\": \"string\",\n    \"short_query\": \"string\"\n  },\n\n  \"kb_used\": [\n    {\n      \"playbook_id\": \"string\",\n      \"title\": \"string\",\n      \"matched_on\": [\"event_id|rule_id|keyword|attack_type\"]\n    }\n  ],\n\n  \"soc_response\": {\n    \"summary_2_lines\": \"string\",\n    \"severity\": \"low|medium|high|critical\",\n    \"confidence\": \"low|medium|high\",\n    \"response_actions\": [\"string\"],\n    \"what_to_check_next\": [\"string\"],\n    \"escalation_criteria\": [\"string\"]\n  },\n\n  \"incident_brief\": {\n    \"event\": \"string\",\n    \"platform\": \"string\",\n    \"what_happened\": \"string\",\n    \"why_it_matters\": \"string\"\n  },\n\n  \"brave_search\": {\n    \"scope\": \"mitre_attack|windows_docs|vendor_docs\",\n    \"query\": \"string\"\n  },\n\n  \"kb_candidate\": {\n    \"title\": \"string\",\n    \"platform\": \"string\",\n    \"event_ids\": [\"string\"],\n    \"rule_ids\": [\"string\"],\n    \"keywords\": [\"string\"],\n    \"short_summary\": \"string\"\n  }\n}\n\nIMPORTANT:\n- If status=\"match\": incident_brief/brave_search/kb_candidate can be empty objects, but MUST exist.\n- If status=\"no_match\": soc_response MUST still exist but should be minimal and factual (no invented procedures).\n",
+        "hasOutputParser": true,
+        "needsFallback": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        352,
+        -752
+      ],
+      "id": "52e4dc68-fcf0-4091-a11c-b42c765cb669",
+      "name": "SOC AI Agent"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "YOUR_DATATABLE_ID_HERE",
+          "mode": "list",
+          "cachedResultName": "Cybersecurity KB",
+          "cachedResultUrl": "/projects/YOUR_PROJECT_ID/datatables/YOUR_DATATABLE_ID"
+        },
+        "matchType": "allConditions",
+        "limit": 100
+      },
+      "type": "n8n-nodes-base.dataTableTool",
+      "typeVersion": 1,
+      "position": [
+        816,
+        -448
+      ],
+      "id": "c7a4b228-30b1-4f50-ab11-a17c01692592",
+      "name": "KB_Search_Cybersecurity"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fc541f4b-2305-4970-8bed-ec25b21d21f8",
+              "leftValue": "={{$json.status}}",
+              "rightValue": "no_match",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        992,
+        -960
+      ],
+      "id": "e3963f5f-e2ee-4c76-87a9-219075de49dc",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "query": "={{ \"(site:learn.microsoft.com OR site:ultimatewindowssecurity.com) \" + $json.brave_query }}\n",
+        "additionalParameters": {}
+      },
+      "type": "@brave/n8n-nodes-brave-search.braveSearch",
+      "typeVersion": 1,
+      "position": [
+        1712,
+        -896
+      ],
+      "id": "f0661e99-b20f-4632-9e47-dfdf377018db",
+      "name": "Brave Search",
+      "credentials": {
+        "braveSearchApi": {
+          "id": "YOUR_BRAVE_SEARCH_API_CREDENTIAL_ID",
+          "name": "Brave Search Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        528,
+        -352
+      ],
+      "id": "49aa059e-20ff-42e1-a02c-8a66d1f5d1cd",
+      "name": "OpenAI Chat Model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_API_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const agent = JSON.parse($json.output);\n\nlet query = \"Windows security event\";\n\nif (agent.brave_search?.query) {\n  query = agent.brave_search.query;\n} else if (agent.search_intent?.short_query) {\n  query = agent.search_intent.short_query;\n}\n\nreturn [{\n  brave_query: query,\n  brave_scope: agent.brave_search?.scope || \"windows_docs\",\n  incident_status: agent.status\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        -608
+      ],
+      "id": "d958a8c8-d288-4611-96fb-f647ec7c7675",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "YOUR_DATATABLE_ID_HERE",
+          "mode": "list",
+          "cachedResultName": "Cybersecurity KB",
+          "cachedResultUrl": "/projects/YOUR_PROJECT_ID/datatables/YOUR_DATATABLE_ID"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "kb_id",
+              "displayName": "kb_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "platform",
+              "displayName": "platform",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "attack_type",
+              "displayName": "attack_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "tags",
+              "displayName": "tags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "severity_min",
+              "displayName": "severity_min",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "triggers",
+              "displayName": "triggers",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "steps",
+              "displayName": "steps",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "what_to_check",
+              "displayName": "what_to_check",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "escalate_if",
+              "displayName": "escalate_if",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "references",
+              "displayName": "references",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "event_id",
+              "displayName": "event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "rule_id",
+              "displayName": "rule_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "response_actions",
+              "displayName": "response_actions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2432,
+        -960
+      ],
+      "id": "74e0ced8-be20-4e93-9655-2d03e60efd18",
+      "name": "Update KB"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = $json.output;\n\nlet parsed;\ntry {\n  parsed = typeof out === 'string' ? JSON.parse(out) : out;\n} catch (e) {\n  parsed = { status: \"parse_error\", raw: out };\n}\n\nreturn [{ ...$json, agent: parsed, status: parsed.status }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -896
+      ],
+      "id": "4ad8fd31-2917-46cc-989a-a012c0413220",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1) Parse the agent output safely\nconst raw = $json.output;\n\nlet kb;\ntry {\n  kb = typeof raw === \"string\" ? JSON.parse(raw) : raw;\n} catch (e) {\n  kb = { title: \"KB parse error\", summary: String(raw) };\n}\n\n// 2) Normalize references (make it array, not one big string)\nconst references = Array.isArray(kb.references)\n  ? kb.references\n  : (typeof kb.references === \"string\" ? kb.references.split(\"\\n\").filter(Boolean) : []);\n\n// 3) Return a full KB row (include actions!)\nreturn [{\n  kb_id: kb.kb_id || `KB-${Date.now()}`,\n  title: kb.title || \"\",\n  category: kb.category || \"Account Management\",\n  platform: kb.platform || \"Windows\",\n  event_id: kb.event_id || \"4634\",\n  rule_id: kb.rule_id || \"\",\n  severity: (kb.severity || \"low\").toLowerCase(),\n  confidence: (kb.confidence || \"medium\").toLowerCase(),\n\n  summary: kb.summary || \"\",\n\n  // ✅ These are what your security team needs:\n  steps: Array.isArray(kb.steps) ? kb.steps.join(\"\\n- \") : (kb.steps || \"\"),\n  what_to_check: Array.isArray(kb.what_to_check) ? kb.what_to_check.join(\"\\n- \") : (kb.what_to_check || \"\"),\n  escalate_if: Array.isArray(kb.escalate_if) ? kb.escalate_if.join(\"\\n- \") : (kb.escalate_if || \"\"),\n  response_actions: Array.isArray(kb.response_actions) ? kb.response_actions.join(\"\\n- \") : (kb.response_actions || \"\"),\n\n  tags: Array.isArray(kb.tags) ? kb.tags.join(\", \") : (kb.tags || \"\"),\n  references: references.slice(0, 5).join(\"\\n\"),\n  created_at: kb.created_at || new Date().toISOString(),\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        -800
+      ],
+      "id": "cbe5120f-dd30-482d-b478-d708d2cda376",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a SOC analyst. Produce ONE JSON object only.\n\nGoal:\n- Build a KB entry for this alert + the web findings.\nmandatory: Provide concrete actions for the security team.\n- \"steps\": 3–6 immediate response steps\n- \"what_to_check\": 3–6 validation checks (logs, timeframe, correlation)\n- \"escalate_if\": 2–4 clear escalation triggers\nUse short, actionable sentences.\nInputs:\n1) Normalized alert JSON: {{$json}}\n2) Web findings: {{$json.web_findings}}\n\nOutput JSON schema (MUST match exactly):\n{\n  \"kb_id\": \"KB-<timestamp-or-guid>\",\n  \"title\": \"\",\n  \"category\": \"\",\n  \"platform\": \"Windows\",\n  \"event_id\": \"4634\",\n  \"rule_id\": \"\",\n  \"severity\": \"low|medium|high|critical\",\n  \"confidence\": \"low|medium|high\",\n  \"summary\": \"\",\n  \"steps\": [\"\", \"\"],\n  \"what_to_check\": [\"\", \"\"],\n  \"escalate_if\": [\"\", \"\"],\n  \"references\": [\"https://...\",\"https://...\"],\n  \"tags\": [\"\", \"\"],\n  \"created_at\": \"<ISO8601>\"\n}\nRules:\n- summary max 2 lines\n- steps / what_to_check / escalate_if: short bullet strings\n- references must be URLs taken from web_findings (max 5)\nReturn JSON only (no markdown).\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        2016,
+        -448
+      ],
+      "id": "0408e234-a625-4407-95de-b7ef37b3ced8",
+      "name": "AI Agent ("KB Writer")"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a SOC incident notification assistant.\n\nWrite a professional incident notification email when:\n- status == \"match\"\nOR\n- status == \"no_match\" BUT a new KB entry was generated and included in the input (steps/what_to_check/escalate_if present).\n\nDO NOT invent facts.\nDO NOT add greetings.\nBe actionable and SOC-focused.\nUse bullet points.\n\nINPUT JSON (use only this):\n{{ JSON.stringify($json, null, 2) }}\n\nDecide the data source:\n- If $json.agent exists, use $json.agent (this is the SOC AI Agent parsed output).\n- Else, use $json directly (this may be the KB row object created by KB Writer / Code in JavaScript3).\n\nEmail format (plain text):\n\nSubject: Incident Alert – {{search_intent.attack_type}} | {{search_intent.platform}} | Severity: {{soc_response.severity}}\n\nIncident Summary (2–3 lines)\n- Use soc_response.summary_2_lines if available\n- Otherwise use summary from the KB row\n- Include event_ids / rule_ids if present.\n\nRecommended Immediate Actions\n- If soc_response.response_actions exists, use it (bullet list)\n- Else if response_actions or steps exist in KB row, use them (bullet list)\n\nWhat to Check Next\n- Use soc_response.what_to_check_next if available\n- Else use what_to_check from KB row\n\nEscalation Criteria\n- Use soc_response.escalation_criteria if available\n- Else use escalate_if from KB row\n\nReferences\n- If references exist, list URLs one per line.\n\nOutput RULE:\nReturn ONLY the email text. No JSON. No markdown.\n",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        1280,
+        -1056
+      ],
+      "id": "3e5e4902-dac8-4cf7-9a0a-5bc44a8dcae1",
+      "name": "Email Writer AI Agent"
+    }
+  ],
+  "connections": {
+    "Microsoft Outlook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Normalize Wazuh Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Wazuh Alert": {
+      "main": [
+        [
+          {
+            "node": "SOC AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM – GPT-4o-mini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SOC AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "AI Agent ("KB Writer")",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Email Writer AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SOC AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB_Search_Cybersecurity": {
+      "ai_tool": [
+        [
+          {
+            "node": "SOC AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Writer AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Brave Search": {
+      "main": [
+        [
+          {
+            "node": "AI Agent ("KB Writer")",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SOC AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Brave Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update KB": {
+      "main": [
+        []
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Update KB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Writer AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent ("KB Writer")": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Writer AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
